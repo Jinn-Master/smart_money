@@ -1,0 +1,1255 @@
+"""
+Market Depth Analysis - Part 3
+Advanced pattern detection, real-time monitoring, and trading signals
+"""
+
+from enum import Enum
+import json
+import time
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
+import threading
+from queue import Queue, Empty
+import math
+
+
+class MarketState(Enum):
+    """Market state classification"""
+    ACCUMULATION = "accumulation"
+    DISTRIBUTION = "distribution"
+    ABSORPTION = "absorption"
+    EXHAUSTION = "exhaustion"
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
+    CONSOLIDATION = "consolidation"
+    REVERSAL = "reversal"
+    BREAKOUT = "breakout"
+    UNCERTAIN = "uncertain"
+
+
+class DepthPattern(Enum):
+    """Market depth patterns"""
+    ICEBERG_ORDER = "iceberg_order"
+    SPOOFING = "spoofing"
+    LIQUIDITY_GRAB = "liquidity_grab"
+    STOP_HUNTING = "stop_hunting"
+    MARKET_MAKING = "market_making"
+    MOMENTUM_BUILDUP = "momentum_buildup"
+    FADE = "fade"
+    FADE_REVERSAL = "fade_reversal"
+
+
+class OrderFlowDirection(Enum):
+    """Order flow direction"""
+    AGGRESSIVE_BUY = "aggressive_buy"
+    AGGRESSIVE_SELL = "aggressive_sell"
+    PASSIVE_BUY = "passive_buy"
+    PASSIVE_SELL = "passive_sell"
+    NEUTRAL = "neutral"
+
+
+@dataclass
+class PatternDetection:
+    """Detected market depth pattern"""
+    pattern_type: DepthPattern
+    confidence: float
+    price_level: float
+    volume: float
+    timestamp: datetime
+    metadata: Dict[str, Any] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            'pattern_type': self.pattern_type.value,
+            'confidence': self.confidence,
+            'price_level': self.price_level,
+            'volume': self.volume,
+            'timestamp': self.timestamp.isoformat(),
+            'metadata': self.metadata or {}
+        }
+
+
+@dataclass
+class TradingSignal:
+    """Trading signal based on depth analysis"""
+    signal: str  # 'BUY', 'SELL', 'NEUTRAL', 'STRONG_BUY', 'STRONG_SELL'
+    strength: float  # 0-1 scale
+    price: float
+    stop_loss: float
+    take_profit: float
+    confidence: float
+    rationale: List[str]
+    timestamp: datetime
+    pattern_confirmations: List[PatternDetection] = None
+    risk_reward_ratio: float = 0.0
+    
+    def is_valid(self) -> bool:
+        """Check if signal is valid"""
+        return (self.confidence > 0.5 and 
+                abs(self.stop_loss - self.price) > 0 and
+                self.risk_reward_ratio > 1.0)
+
+
+class DepthPatternDetector:
+    """Advanced pattern detector for market depth"""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        self.config = config or {}
+        
+        # Pattern detection thresholds
+        self.iceberg_threshold = self.config.get('iceberg_threshold', 5)  # Ratio of hidden to visible
+        self.spoofing_window = self.config.get('spoofing_window', 10)  # Updates to detect spoofing
+        self.liquidity_grab_threshold = self.config.get('liquidity_grab_threshold', 3.0)
+        self.stop_hunt_sensitivity = self.config.get('stop_hunt_sensitivity', 2.0)
+        
+        # State tracking
+        self.order_history: deque = deque(maxlen=1000)
+        self.pattern_history: List[PatternDetection] = []
+        self.price_action_history: List[Dict[str, Any]] = []
+        
+        # Real-time detection
+        self.recent_updates: Dict[float, List[datetime]] = defaultdict(list)
+        self.suspicious_levels: Set[float] = set()
+        
+        logger.info("DepthPatternDetector initialized")
+    
+    def detect_patterns(self, 
+                       current_depth: MarketDepthSnapshot,
+                       previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect advanced patterns in market depth"""
+        patterns = []
+        
+        # Combine all pattern detections
+        patterns.extend(self._detect_iceberg_orders(current_depth))
+        patterns.extend(self._detect_spoofing(current_depth, previous_depths))
+        patterns.extend(self._detect_liquidity_grabs(current_depth, previous_depths))
+        patterns.extend(self._detect_stop_hunting(current_depth, previous_depths))
+        patterns.extend(self._detect_momentum_buildup(current_depth, previous_depths))
+        patterns.extend(self._detect_fade_patterns(current_depth, previous_depths))
+        
+        # Update history
+        self.pattern_history.extend(patterns)
+        if len(self.pattern_history) > 500:
+            self.pattern_history = self.pattern_history[-500:]
+        
+        return patterns
+    
+    def _detect_iceberg_orders(self, depth: MarketDepthSnapshot) -> List[PatternDetection]:
+        """Detect iceberg (hidden large) orders"""
+        patterns = []
+        
+        # Look for levels with consistent replenishment
+        for level in depth.levels:
+            # Check if this level has been consistently replenished
+            recent_updates = self.recent_updates.get(level.price, [])
+            update_count = len(recent_updates)
+            
+            # Iceberg indicator: frequent updates with similar quantities
+            if update_count >= 5:
+                # Check if quantity stays relatively constant
+                # (iceberg orders get replenished as they're executed)
+                
+                # Get recent quantity changes
+                # This would require tracking quantity history per level
+                # For now, we'll flag levels with frequent updates as potential icebergs
+                
+                confidence = min(update_count / 20, 1.0)  # More updates = higher confidence
+                if confidence > 0.3:
+                    pattern = PatternDetection(
+                        pattern_type=DepthPattern.ICEBERG_ORDER,
+                        confidence=confidence,
+                        price_level=level.price,
+                        volume=level.total_quantity,
+                        timestamp=datetime.now(),
+                        metadata={
+                            'update_count': update_count,
+                            'current_quantity': level.total_quantity,
+                            'level_type': level.level_type
+                        }
+                    )
+                    patterns.append(pattern)
+        
+        return patterns
+    
+    def _detect_spoofing(self, 
+                        current_depth: MarketDepthSnapshot,
+                        previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect spoofing (fake large orders)"""
+        patterns = []
+        
+        if len(previous_depths) < 3:
+            return patterns
+        
+        # Look for large orders that quickly disappear
+        for level in current_depth.levels:
+            # Get previous levels at this price
+            prev_levels = []
+            for prev_depth in previous_depths[-3:]:
+                prev_level = prev_depth.get_level_at_price(level.price)
+                if prev_level:
+                    prev_levels.append(prev_level)
+            
+            if len(prev_levels) >= 2:
+                # Check for sudden appearance and disappearance
+                quantities = [l.total_quantity for l in prev_levels] + [level.total_quantity]
+                
+                # Calculate volatility of quantity
+                if len(quantities) >= 3:
+                    avg_quantity = statistics.mean(quantities)
+                    std_quantity = statistics.stdev(quantities) if len(quantities) > 1 else 0
+                    
+                    # High volatility with recent large increase followed by decrease = potential spoofing
+                    if std_quantity > avg_quantity * 2 and quantities[-1] < quantities[-2] * 0.5:
+                        confidence = min(std_quantity / (avg_quantity + 1), 1.0)
+                        
+                        pattern = PatternDetection(
+                            pattern_type=DepthPattern.SPOOFING,
+                            confidence=confidence,
+                            price_level=level.price,
+                            volume=level.total_quantity,
+                            timestamp=datetime.now(),
+                            metadata={
+                                'quantity_std': std_quantity,
+                                'quantity_avg': avg_quantity,
+                                'recent_change': quantities[-1] - quantities[-2]
+                            }
+                        )
+                        patterns.append(pattern)
+        
+        return patterns
+    
+    def _detect_liquidity_grabs(self,
+                               current_depth: MarketDepthSnapshot,
+                               previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect liquidity grab patterns"""
+        patterns = []
+        
+        if not previous_depths:
+            return patterns
+        
+        prev_depth = previous_depths[-1]
+        
+        # Look for sudden removal of liquidity followed by price movement
+        for side in ['bid', 'ask']:
+            current_levels = []
+            previous_levels = []
+            
+            for level in current_depth.levels:
+                if side == 'bid' and level.bid_quantity > 0:
+                    current_levels.append(level)
+                elif side == 'ask' and level.ask_quantity > 0:
+                    current_levels.append(level)
+            
+            for level in prev_depth.levels:
+                if side == 'bid' and level.bid_quantity > 0:
+                    previous_levels.append(level)
+                elif side == 'ask' and level.ask_quantity > 0:
+                    previous_levels.append(level)
+            
+            if not current_levels or not previous_levels:
+                continue
+            
+            # Calculate total liquidity change
+            if side == 'bid':
+                current_liquidity = sum(l.bid_quantity for l in current_levels[:5])
+                prev_liquidity = sum(l.bid_quantity for l in previous_levels[:5])
+            else:
+                current_liquidity = sum(l.ask_quantity for l in current_levels[:5])
+                prev_liquidity = sum(l.ask_quantity for l in previous_levels[:5])
+            
+            liquidity_change = current_liquidity - prev_liquidity
+            
+            # Large decrease in liquidity
+            if abs(liquidity_change) > self.liquidity_grab_threshold * 1000:
+                # Check price movement
+                price_movement = 0
+                if side == 'bid':
+                    price_movement = current_depth.best_bid - prev_depth.best_bid
+                else:
+                    price_movement = current_depth.best_ask - prev_depth.best_ask
+                
+                # Liquidity grab: liquidity removed, price moves in opposite direction
+                if (liquidity_change < 0 and price_movement > 0 and side == 'bid') or \
+                   (liquidity_change < 0 and price_movement < 0 and side == 'ask'):
+                    
+                    confidence = min(abs(liquidity_change) / 10000, 1.0)
+                    
+                    pattern = PatternDetection(
+                        pattern_type=DepthPattern.LIQUIDITY_GRAB,
+                        confidence=confidence,
+                        price_level=current_depth.best_bid if side == 'bid' else current_depth.best_ask,
+                        volume=abs(liquidity_change),
+                        timestamp=datetime.now(),
+                        metadata={
+                            'side': side,
+                            'liquidity_change': liquidity_change,
+                            'price_movement': price_movement,
+                            'current_liquidity': current_liquidity
+                        }
+                    )
+                    patterns.append(pattern)
+        
+        return patterns
+    
+    def _detect_stop_hunting(self,
+                            current_depth: MarketDepthSnapshot,
+                            previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect stop hunting patterns"""
+        patterns = []
+        
+        if len(previous_depths) < 5:
+            return patterns
+        
+        # Look for price moves through known liquidity levels followed by reversal
+        for i in range(1, min(5, len(previous_depths))):
+            prev_depth = previous_depths[-i]
+            
+            # Check for previous support/resistance levels
+            # (implementation would require tracking of key levels)
+            # For now, we'll look at large order clusters that were broken
+            
+            for level in prev_depth.levels:
+                if level.total_quantity > self.stop_hunt_sensitivity * 5000:
+                    # Was this level broken?
+                    current_price = current_depth.best_bid
+                    price_broke_level = False
+                    
+                    if level.price < prev_depth.best_bid and level.price > current_price:
+                        price_broke_level = True  # Support broken
+                    elif level.price > prev_depth.best_ask and level.price < current_price:
+                        price_broke_level = True  # Resistance broken
+                    
+                    if price_broke_level:
+                        # Check if price reversed after breaking level
+                        if i > 1:
+                            depth_before = previous_depths[-i-1]
+                            movement_after = abs(current_price - level.price)
+                            
+                            if movement_after < abs(prev_depth.best_bid - level.price) * 0.5:
+                                # Price reversed after breaking level = potential stop hunt
+                                confidence = min(level.total_quantity / 20000, 1.0)
+                                
+                                pattern = PatternDetection(
+                                    pattern_type=DepthPattern.STOP_HUNTING,
+                                    confidence=confidence,
+                                    price_level=level.price,
+                                    volume=level.total_quantity,
+                                    timestamp=datetime.now(),
+                                    metadata={
+                                        'level_broken': True,
+                                        'reversal_after_break': True,
+                                        'initial_quantity': level.total_quantity
+                                    }
+                                )
+                                patterns.append(pattern)
+        
+        return patterns
+    
+    def _detect_momentum_buildup(self,
+                                current_depth: MarketDepthSnapshot,
+                                previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect momentum buildup patterns"""
+        patterns = []
+        
+        if len(previous_depths) < 3:
+            return patterns
+        
+        # Look for increasing order size at key levels
+        for side in ['bid', 'ask']:
+            level_changes = []
+            
+            for i in range(1, min(4, len(previous_depths))):
+                prev_depth = previous_depths[-i]
+                current_quantity = 0
+                prev_quantity = 0
+                
+                # Get top 3 levels on each side
+                if side == 'bid':
+                    current_levels = sorted(
+                        [l for l in current_depth.levels if l.bid_quantity > 0],
+                        key=lambda x: x.price,
+                        reverse=True
+                    )[:3]
+                    prev_levels = sorted(
+                        [l for l in prev_depth.levels if l.bid_quantity > 0],
+                        key=lambda x: x.price,
+                        reverse=True
+                    )[:3]
+                    
+                    if current_levels and prev_levels:
+                        current_quantity = sum(l.bid_quantity for l in current_levels)
+                        prev_quantity = sum(l.bid_quantity for l in prev_levels)
+                
+                else:  # ask
+                    current_levels = sorted(
+                        [l for l in current_depth.levels if l.ask_quantity > 0],
+                        key=lambda x: x.price
+                    )[:3]
+                    prev_levels = sorted(
+                        [l for l in prev_depth.levels if l.ask_quantity > 0],
+                        key=lambda x: x.price
+                    )[:3]
+                    
+                    if current_levels and prev_levels:
+                        current_quantity = sum(l.ask_quantity for l in current_levels)
+                        prev_quantity = sum(l.ask_quantity for l in prev_levels)
+                
+                if prev_quantity > 0:
+                    change = (current_quantity - prev_quantity) / prev_quantity
+                    level_changes.append(change)
+            
+            # Check for consistent buildup
+            if len(level_changes) >= 2 and all(c > 0 for c in level_changes):
+                avg_buildup = statistics.mean(level_changes)
+                if avg_buildup > 0.1:  # 10% increase per update
+                    confidence = min(avg_buildup, 1.0)
+                    
+                    pattern = PatternDetection(
+                        pattern_type=DepthPattern.MOMENTUM_BUILDUP,
+                        confidence=confidence,
+                        price_level=current_depth.best_bid if side == 'bid' else current_depth.best_ask,
+                        volume=current_quantity,
+                        timestamp=datetime.now(),
+                        metadata={
+                            'side': side,
+                            'buildup_rate': avg_buildup,
+                            'level_changes': level_changes,
+                            'current_momentum': level_changes[-1] if level_changes else 0
+                        }
+                    )
+                    patterns.append(pattern)
+        
+        return patterns
+    
+    def _detect_fade_patterns(self,
+                             current_depth: MarketDepthSnapshot,
+                             previous_depths: List[MarketDepthSnapshot]) -> List[PatternDetection]:
+        """Detect fade patterns (counter-trend moves)"""
+        patterns = []
+        
+        if len(previous_depths) < 4:
+            return patterns
+        
+        # Analyze order flow imbalance over time
+        imbalances = []
+        for i in range(min(5, len(previous_depths))):
+            depth = previous_depths[-i-1] if i < len(previous_depths) else current_depth
+            analyzer = MarketDepthAnalyzer()
+            imbalance_analysis = analyzer._analyze_depth_imbalance(depth)
+            imbalances.append(imbalance_analysis.get('weighted_imbalance', 0))
+        
+        # Look for extreme imbalances followed by reversal
+        if len(imbalances) >= 3:
+            # Check for recent extreme
+            recent_extreme = max(abs(im) for im in imbalances[:3])
+            current_imbalance = imbalances[0]
+            
+            # Fade pattern: extreme imbalance followed by price move in opposite direction
+            if recent_extreme > 0.6 and abs(current_imbalance) < recent_extreme * 0.5:
+                # Determine direction
+                if imbalances[1] > 0.6:  # Was extreme buying
+                    pattern_type = DepthPattern.FADE if current_imbalance < 0 else DepthPattern.FADE_REVERSAL
+                elif imbalances[1] < -0.6:  # Was extreme selling
+                    pattern_type = DepthPattern.FADE if current_imbalance > 0 else DepthPattern.FADE_REVERSAL
+                else:
+                    pattern_type = None
+                
+                if pattern_type:
+                    confidence = min(recent_extreme, 1.0)
+                    
+                    pattern = PatternDetection(
+                        pattern_type=pattern_type,
+                        confidence=confidence,
+                        price_level=current_depth.best_bid,
+                        volume=abs(current_imbalance) * 10000,  # Rough volume estimate
+                        timestamp=datetime.now(),
+                        metadata={
+                            'recent_extreme': recent_extreme,
+                            'current_imbalance': current_imbalance,
+                            'imbalance_history': imbalances
+                        }
+                    )
+                    patterns.append(pattern)
+        
+        return patterns
+
+
+class RealTimeDepthMonitor:
+    """Real-time market depth monitor"""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        self.config = config or {}
+        
+        # Monitoring configuration
+        self.update_interval = self.config.get('update_interval', 0.1)  # seconds
+        self.alert_thresholds = self.config.get('alert_thresholds', {})
+        self.max_history = self.config.get('max_history', 1000)
+        
+        # Components
+        self.analyzer = MarketDepthAnalyzer(config)
+        self.pattern_detector = DepthPatternDetector(config)
+        
+        # Real-time state
+        self.current_depth: Optional[MarketDepthSnapshot] = None
+        self.depth_history: deque = deque(maxlen=self.max_history)
+        self.alerts: Queue = Queue()
+        self.signals: List[TradingSignal] = []
+        
+        # Threading
+        self._running = False
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._lock = threading.RLock()
+        
+        # Statistics
+        self.metrics = {
+            'updates_received': 0,
+            'patterns_detected': 0,
+            'signals_generated': 0,
+            'alerts_triggered': 0
+        }
+        
+        logger.info("RealTimeDepthMonitor initialized")
+    
+    def start(self):
+        """Start real-time monitoring"""
+        if self._running:
+            logger.warning("Monitor already running")
+            return
+        
+        self._running = True
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+        logger.info("RealTimeDepthMonitor started")
+    
+    def stop(self):
+        """Stop real-time monitoring"""
+        self._running = False
+        if self._monitor_thread:
+            self._monitor_thread.join(timeout=2.0)
+        logger.info("RealTimeDepthMonitor stopped")
+    
+    def update(self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]], symbol: str):
+        """Update market depth data"""
+        with self._lock:
+            # Update depth snapshot
+            snapshot = self.analyzer.update_depth(bids, asks, symbol)
+            self.current_depth = snapshot
+            self.depth_history.append(snapshot)
+            
+            # Update metrics
+            self.metrics['updates_received'] += 1
+            
+            # Check for alerts
+            self._check_alerts(snapshot)
+            
+            # Detect patterns
+            patterns = self._detect_patterns(snapshot)
+            if patterns:
+                self.metrics['patterns_detected'] += len(patterns)
+                
+                # Generate trading signals
+                signals = self._generate_signals(snapshot, patterns)
+                self.signals.extend(signals)
+                self.metrics['signals_generated'] += len(signals)
+    
+    def _monitor_loop(self):
+        """Main monitoring loop"""
+        while self._running:
+            try:
+                # Process any pending tasks
+                self._process_alerts()
+                
+                # Update statistics
+                self._update_monitor_metrics()
+                
+                # Sleep until next update
+                time.sleep(self.update_interval)
+                
+            except Exception as e:
+                logger.error(f"Error in monitor loop: {e}")
+                time.sleep(1.0)
+    
+    def _detect_patterns(self, snapshot: MarketDepthSnapshot) -> List[PatternDetection]:
+        """Detect patterns in current depth"""
+        if len(self.depth_history) < 2:
+            return []
+        
+        # Get recent history
+        recent_history = list(self.depth_history)[-5:]
+        
+        # Detect patterns
+        patterns = self.pattern_detector.detect_patterns(snapshot, recent_history)
+        
+        return patterns
+    
+    def _check_alerts(self, snapshot: MarketDepthSnapshot):
+        """Check for alert conditions"""
+        alerts = []
+        
+        # Check spread alerts
+        spread_bps = (snapshot.spread / snapshot.best_bid * 10000) if snapshot.best_bid > 0 else 0
+        if spread_bps > self.alert_thresholds.get('max_spread_bps', 50):
+            alerts.append({
+                'type': 'high_spread',
+                'severity': 'warning',
+                'message': f"Spread widened to {spread_bps:.1f} bps",
+                'timestamp': datetime.now(),
+                'data': {'spread_bps': spread_bps}
+            })
+        
+        # Check liquidity alerts
+        total_volume = snapshot.total_bid_volume + snapshot.total_ask_volume
+        if total_volume < self.alert_thresholds.get('min_liquidity', 10000):
+            alerts.append({
+                'type': 'low_liquidity',
+                'severity': 'warning',
+                'message': f"Low liquidity: {total_volume:.0f} total volume",
+                'timestamp': datetime.now(),
+                'data': {'total_volume': total_volume}
+            })
+        
+        # Check depth imbalance alerts
+        analysis = self.analyzer._analyze_depth_imbalance(snapshot)
+        imbalance = analysis.get('weighted_imbalance', 0)
+        
+        if abs(imbalance) > self.alert_thresholds.get('imbalance_threshold', 0.7):
+            side = "bid" if imbalance > 0 else "ask"
+            alerts.append({
+                'type': 'extreme_imbalance',
+                'severity': 'alert',
+                'message': f"Extreme {side} imbalance: {imbalance:.3f}",
+                'timestamp': datetime.now(),
+                'data': {'imbalance': imbalance, 'side': side}
+            })
+        
+        # Add alerts to queue
+        for alert in alerts:
+            self.alerts.put(alert)
+            self.metrics['alerts_triggered'] += 1
+    
+    def _process_alerts(self):
+        """Process pending alerts"""
+        try:
+            while True:
+                alert = self.alerts.get_nowait()
+                self._handle_alert(alert)
+        except Empty:
+            pass
+    
+    def _handle_alert(self, alert: Dict[str, Any]):
+        """Handle an alert"""
+        # In production, this would send notifications, log to file, etc.
+        logger.warning(f"ALERT [{alert['severity'].upper()}]: {alert['message']}")
+        
+        # Could also implement:
+        # - Email/SMS notifications
+        # - Webhook calls
+        # - Database logging
+        # - Trading system integration
+    
+    def _generate_signals(self, 
+                         snapshot: MarketDepthSnapshot,
+                         patterns: List[PatternDetection]) -> List[TradingSignal]:
+        """Generate trading signals based on patterns and depth analysis"""
+        signals = []
+        
+        if not patterns:
+            return signals
+        
+        # Group patterns by type
+        pattern_groups = defaultdict(list)
+        for pattern in patterns:
+            pattern_groups[pattern.pattern_type].append(pattern)
+        
+        # Generate signals based on pattern combinations
+        signals.extend(self._generate_absorption_signals(snapshot, patterns))
+        signals.extend(self._generate_momentum_signals(snapshot, patterns))
+        signals.extend(self._generate_reversal_signals(snapshot, patterns))
+        
+        # Filter valid signals
+        valid_signals = [s for s in signals if s.is_valid()]
+        
+        return valid_signals
+    
+    def _generate_absorption_signals(self,
+                                    snapshot: MarketDepthSnapshot,
+                                    patterns: List[PatternDetection]) -> List[TradingSignal]:
+        """Generate signals from absorption patterns"""
+        signals = []
+        
+        # Look for absorption patterns
+        absorption_patterns = [p for p in patterns if p.pattern_type in [
+            DepthPattern.ABSORPTION, DepthPattern.ICEBERG_ORDER
+        ]]
+        
+        for pattern in absorption_patterns:
+            if pattern.confidence > 0.6:
+                # Determine signal based on pattern context
+                metadata = pattern.metadata or {}
+                level_type = metadata.get('level_type', '')
+                
+                if level_type == 'bid' and pattern.confidence > 0.7:
+                    # Strong bid absorption = bullish signal
+                    signal = TradingSignal(
+                        signal='BUY',
+                        strength=pattern.confidence,
+                        price=snapshot.best_ask,  # Buy at ask
+                        stop_loss=pattern.price_level * 0.995,  # 0.5% below absorption level
+                        take_profit=pattern.price_level * 1.01,  # 1% above
+                        confidence=pattern.confidence,
+                        rationale=[f"Bid absorption detected at {pattern.price_level:.2f}",
+                                  f"Confidence: {pattern.confidence:.2f}"],
+                        timestamp=datetime.now(),
+                        pattern_confirmations=[pattern],
+                        risk_reward_ratio=2.0
+                    )
+                    signals.append(signal)
+                
+                elif level_type == 'ask' and pattern.confidence > 0.7:
+                    # Strong ask absorption = bearish signal
+                    signal = TradingSignal(
+                        signal='SELL',
+                        strength=pattern.confidence,
+                        price=snapshot.best_bid,  # Sell at bid
+                        stop_loss=pattern.price_level * 1.005,  # 0.5% above absorption level
+                        take_profit=pattern.price_level * 0.99,  # 1% below
+                        confidence=pattern.confidence,
+                        rationale=[f"Ask absorption detected at {pattern.price_level:.2f}",
+                                  f"Confidence: {pattern.confidence:.2f}"],
+                        timestamp=datetime.now(),
+                        pattern_confirmations=[pattern],
+                        risk_reward_ratio=2.0
+                    )
+                    signals.append(signal)
+        
+        return signals
+    
+    def _generate_momentum_signals(self,
+                                  snapshot: MarketDepthSnapshot,
+                                  patterns: List[PatternDetection]) -> List[TradingSignal]:
+        """Generate signals from momentum patterns"""
+        signals = []
+        
+        # Look for momentum patterns
+        momentum_patterns = [p for p in patterns if p.pattern_type in [
+            DepthPattern.MOMENTUM_BUILDUP, DepthPattern.LIQUIDITY_GRAB
+        ]]
+        
+        if not momentum_patterns:
+            return signals
+        
+        # Analyze momentum strength
+        bid_momentum = sum(p.confidence for p in momentum_patterns 
+                          if p.metadata and p.metadata.get('side') == 'bid')
+        ask_momentum = sum(p.confidence for p in momentum_patterns 
+                          if p.metadata and p.metadata.get('side') == 'ask')
+        
+        momentum_diff = bid_momentum - ask_momentum
+        
+        # Generate momentum signals
+        if bid_momentum > 1.0 and momentum_diff > 0.5:
+            # Strong buying momentum
+            signal = TradingSignal(
+                signal='STRONG_BUY',
+                strength=min(bid_momentum / 2, 1.0),
+                price=snapshot.best_ask,
+                stop_loss=snapshot.best_bid * 0.99,
+                take_profit=snapshot.best_bid * 1.02,
+                confidence=min(bid_momentum, 1.0),
+                rationale=[f"Strong buying momentum detected",
+                          f"Bid momentum: {bid_momentum:.2f}, Ask momentum: {ask_momentum:.2f}"],
+                timestamp=datetime.now(),
+                pattern_confirmations=momentum_patterns,
+                risk_reward_ratio=2.0
+            )
+            signals.append(signal)
+        
+        elif ask_momentum > 1.0 and momentum_diff < -0.5:
+            # Strong selling momentum
+            signal = TradingSignal(
+                signal='STRONG_SELL',
+                strength=min(ask_momentum / 2, 1.0),
+                price=snapshot.best_bid,
+                stop_loss=snapshot.best_ask * 1.01,
+                take_profit=snapshot.best_ask * 0.98,
+                confidence=min(ask_momentum, 1.0),
+                rationale=[f"Strong selling momentum detected",
+                          f"Bid momentum: {bid_momentum:.2f}, Ask momentum: {ask_momentum:.2f}"],
+                timestamp=datetime.now(),
+                pattern_confirmations=momentum_patterns,
+                risk_reward_ratio=2.0
+            )
+            signals.append(signal)
+        
+        return signals
+    
+    def _generate_reversal_signals(self,
+                                  snapshot: MarketDepthSnapshot,
+                                  patterns: List[PatternDetection]) -> List[TradingSignal]:
+        """Generate signals from reversal patterns"""
+        signals = []
+        
+        # Look for reversal patterns
+        reversal_patterns = [p for p in patterns if p.pattern_type in [
+            DepthPattern.FADE, DepthPattern.FADE_REVERSAL, DepthPattern.EXHAUSTION
+        ]]
+        
+        for pattern in reversal_patterns:
+            if pattern.confidence > 0.65:
+                metadata = pattern.metadata or {}
+                
+                # Determine reversal direction
+                if pattern.pattern_type == DepthPattern.FADE:
+                    # Fade = counter-trend signal
+                    # Need to determine which side was extreme
+                    imbalance_history = metadata.get('imbalance_history', [])
+                    if len(imbalance_history) >= 2:
+                        if imbalance_history[1] > 0.6:  # Was extreme buying
+                            # Signal: SELL (fade the rally)
+                            signal = TradingSignal(
+                                signal='SELL',
+                                strength=pattern.confidence,
+                                price=snapshot.best_bid,
+                                stop_loss=snapshot.best_ask * 1.005,
+                                take_profit=snapshot.best_bid * 0.99,
+                                confidence=pattern.confidence,
+                                rationale=[f"Fade pattern detected after extreme buying",
+                                          f"Confidence: {pattern.confidence:.2f}"],
+                                timestamp=datetime.now(),
+                                pattern_confirmations=[pattern],
+                                risk_reward_ratio=1.5
+                            )
+                            signals.append(signal)
+                        
+                        elif imbalance_history[1] < -0.6:  # Was extreme selling
+                            # Signal: BUY (fade the drop)
+                            signal = TradingSignal(
+                                signal='BUY',
+                                strength=pattern.confidence,
+                                price=snapshot.best_ask,
+                                stop_loss=snapshot.best_bid * 0.995,
+                                take_profit=snapshot.best_ask * 1.01,
+                                confidence=pattern.confidence,
+                                rationale=[f"Fade pattern detected after extreme selling",
+                                          f"Confidence: {pattern.confidence:.2f}"],
+                                timestamp=datetime.now(),
+                                pattern_confirmations=[pattern],
+                                risk_reward_ratio=1.5
+                            )
+                            signals.append(signal)
+        
+        return signals
+    
+    def _update_monitor_metrics(self):
+        """Update monitor metrics"""
+        # Update pattern detection rate
+        if self.metrics['updates_received'] > 0:
+            self.metrics['pattern_rate'] = (
+                self.metrics['patterns_detected'] / self.metrics['updates_received']
+            )
+            self.metrics['signal_rate'] = (
+                self.metrics['signals_generated'] / max(self.metrics['updates_received'], 1)
+            )
+    
+    def get_current_state(self) -> Dict[str, Any]:
+        """Get current monitor state"""
+        with self._lock:
+            state = {
+                'timestamp': datetime.now().isoformat(),
+                'current_depth': self._snapshot_to_dict(self.current_depth) if self.current_depth else None,
+                'metrics': self.metrics.copy(),
+                'recent_signals': [self._signal_to_dict(s) for s in self.signals[-5:]],
+                'active_alerts': self.alerts.qsize(),
+                'depth_history_count': len(self.depth_history)
+            }
+            return state
+    
+    def get_recent_signals(self, limit: int = 10) -> List[TradingSignal]:
+        """Get recent trading signals"""
+        return self.signals[-limit:] if self.signals else []
+    
+    def clear_signals(self):
+        """Clear signal history"""
+        self.signals.clear()
+        logger.info("Trading signals cleared")
+    
+    @staticmethod
+    def _snapshot_to_dict(snapshot: MarketDepthSnapshot) -> Dict[str, Any]:
+        """Convert snapshot to dictionary"""
+        if not snapshot:
+            return {}
+        
+        return {
+            'timestamp': snapshot.timestamp.isoformat(),
+            'symbol': snapshot.symbol,
+            'best_bid': snapshot.best_bid,
+            'best_ask': snapshot.best_ask,
+            'spread': snapshot.spread,
+            'total_bid_volume': snapshot.total_bid_volume,
+            'total_ask_volume': snapshot.total_ask_volume
+        }
+    
+    @staticmethod
+    def _signal_to_dict(signal: TradingSignal) -> Dict[str, Any]:
+        """Convert signal to dictionary"""
+        return {
+            'signal': signal.signal,
+            'strength': signal.strength,
+            'price': signal.price,
+            'stop_loss': signal.stop_loss,
+            'take_profit': signal.take_profit,
+            'confidence': signal.confidence,
+            'rationale': signal.rationale,
+            'timestamp': signal.timestamp.isoformat(),
+            'risk_reward_ratio': signal.risk_reward_ratio,
+            'is_valid': signal.is_valid()
+        }
+
+
+class DepthAnalysisPipeline:
+    """Complete market depth analysis pipeline"""
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        self.config = config or {}
+        
+        # Initialize components
+        self.analyzer = MarketDepthAnalyzer(config)
+        self.pattern_detector = DepthPatternDetector(config)
+        self.monitor = RealTimeDepthMonitor(config)
+        
+        # Pipeline state
+        self.is_running = False
+        self.symbol = self.config.get('symbol', 'UNKNOWN')
+        
+        # Data storage
+        self.analysis_results: deque = deque(maxlen=1000)
+        self.trade_log: List[Dict[str, Any]] = []
+        
+        logger.info("DepthAnalysisPipeline initialized")
+    
+    def process_update(self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]]):
+        """Process a market depth update through the pipeline"""
+        try:
+            # 1. Update depth analyzer
+            snapshot = self.analyzer.update_depth(bids, asks, self.symbol)
+            
+            # 2. Get recent history for pattern detection
+            recent_history = list(self.analyzer.depth_history)[-5:]
+            
+            # 3. Detect patterns
+            patterns = self.pattern_detector.detect_patterns(snapshot, recent_history)
+            
+            # 4. Comprehensive analysis
+            analysis = self.analyzer.analyze_depth(snapshot)
+            
+            # 5. Generate trading signals
+            signals = self._generate_pipeline_signals(snapshot, patterns, analysis)
+            
+            # 6. Update monitor
+            self.monitor.update(bids, asks, self.symbol)
+            
+            # 7. Store results
+            result = {
+                'timestamp': datetime.now(),
+                'snapshot': snapshot,
+                'patterns': patterns,
+                'analysis': analysis,
+                'signals': signals,
+                'pipeline_metrics': self._calculate_pipeline_metrics()
+            }
+            
+            self.analysis_results.append(result)
+            
+            # 8. Log if significant signals
+            if signals:
+                self._log_signals(signals, snapshot, patterns)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in pipeline processing: {e}")
+            raise
+    
+    def _generate_pipeline_signals(self,
+                                  snapshot: MarketDepthSnapshot,
+                                  patterns: List[PatternDetection],
+                                  analysis: Dict[str, Any]) -> List[TradingSignal]:
+        """Generate signals using the full pipeline"""
+        signals = []
+        
+        # Get basic signals from monitor
+        basic_signals = self.monitor._generate_signals(snapshot, patterns)
+        signals.extend(basic_signals)
+        
+        # Add signals based on comprehensive analysis
+        signals.extend(self._generate_analysis_signals(snapshot, analysis))
+        
+        # Filter and rank signals
+        ranked_signals = self._rank_signals(signals, snapshot, patterns, analysis)
+        
+        return ranked_signals
+    
+    def _generate_analysis_signals(self,
+                                  snapshot: MarketDepthSnapshot,
+                                  analysis: Dict[str, Any]) -> List[TradingSignal]:
+        """Generate signals from comprehensive analysis"""
+        signals = []
+        
+        # Check market conditions
+        conditions = analysis.get('market_conditions', {})
+        market_state = conditions.get('market_state', 'unknown')
+        
+        # Generate signals based on market state
+        if market_state == 'one_sided':
+            # Strong imbalance - potential momentum continuation
+            imbalance = analysis.get('imbalance_analysis', {}).get('weighted_imbalance', 0)
+            
+            if imbalance > 0.7:
+                signal = TradingSignal(
+                    signal='STRONG_BUY',
+                    strength=0.8,
+                    price=snapshot.best_ask,
+                    stop_loss=snapshot.best_bid * 0.99,
+                    take_profit=snapshot.best_bid * 1.015,
+                    confidence=0.7,
+                    rationale=[f"One-sided buying pressure",
+                              f"Imbalance: {imbalance:.3f}"],
+                    timestamp=datetime.now(),
+                    risk_reward_ratio=1.5
+                )
+                signals.append(signal)
+            
+            elif imbalance < -0.7:
+                signal = TradingSignal(
+                    signal='STRONG_SELL',
+                    strength=0.8,
+                    price=snapshot.best_bid,
+                    stop_loss=snapshot.best_ask * 1.01,
+                    take_profit=snapshot.best_ask * 0.985,
+                    confidence=0.7,
+                    rationale=[f"One-sided selling pressure",
+                              f"Imbalance: {imbalance:.3f}"],
+                    timestamp=datetime.now(),
+                    risk_reward_ratio=1.5
+                )
+                signals.append(signal)
+        
+        elif market_state == 'balanced':
+            # Range-bound market - look for breakout signals
+            support_resistance = analysis.get('support_resistance', {})
+            closest_support = support_resistance.get('closest_support')
+            closest_resistance = support_resistance.get('closest_resistance')
+            
+            if closest_support and closest_resistance:
+                # Calculate range
+                price_range = closest_resistance['price'] - closest_support['price']
+                
+                # Check if near support
+                distance_to_support = (snapshot.best_bid - closest_support['price']) / price_range
+                if distance_to_support < 0.1:  # Within 10% of support
+                    signal = TradingSignal(
+                        signal='BUY',
+                        strength=0.6,
+                        price=snapshot.best_ask,
+                        stop_loss=closest_support['price'] * 0.995,
+                        take_profit=closest_resistance['price'],
+                        confidence=0.6,
+                        rationale=[f"Price near strong support at {closest_support['price']:.2f}",
+                                  f"Support strength: {closest_support['strength']:.2f}"],
+                        timestamp=datetime.now(),
+                        risk_reward_ratio=2.0
+                    )
+                    signals.append(signal)
+                
+                # Check if near resistance
+                distance_to_resistance = (closest_resistance['price'] - snapshot.best_ask) / price_range
+                if distance_to_resistance < 0.1:  # Within 10% of resistance
+                    signal = TradingSignal(
+                        signal='SELL',
+                        strength=0.6,
+                        price=snapshot.best_bid,
+                        stop_loss=closest_resistance['price'] * 1.005,
+                        take_profit=closest_support['price'],
+                        confidence=0.6,
+                        rationale=[f"Price near strong resistance at {closest_resistance['price']:.2f}",
+                                  f"Resistance strength: {closest_resistance['strength']:.2f}"],
+                        timestamp=datetime.now(),
+                        risk_reward_ratio=2.0
+                    )
+                    signals.append(signal)
+        
+        return signals
+    
+    def _rank_signals(self,
+                     signals: List[TradingSignal],
+                     snapshot: MarketDepthSnapshot,
+                     patterns: List[PatternDetection],
+                     analysis: Dict[str, Any]) -> List[TradingSignal]:
+        """Rank signals by quality"""
+        if not signals:
+            return []
+        
+        ranked = []
+        for signal in signals:
+            # Calculate score based on multiple factors
+            score = 0.0
+            
+            # 1. Signal confidence (0-30 points)
+            score += signal.confidence * 30
+            
+            # 2. Risk-reward ratio (0-30 points)
+            score += min(signal.risk_reward_ratio, 5.0) * 6  # 6 points per R:R unit up to 5
+            
+            # 3. Pattern confirmations (0-20 points)
+            if signal.pattern_confirmations:
+                avg_pattern_confidence = sum(p.confidence for p in signal.pattern_confirmations) / len(signal.pattern_confirmations)
+                score += avg_pattern_confidence * 20
+            
+            # 4. Market conditions alignment (0-20 points)
+            conditions = analysis.get('market_conditions', {})
+            if conditions.get('liquidity') == 'high':
+                score += 10
+            if conditions.get('volatility') == 'low':
+                score += 10
+            
+            # Normalize to 0-1 scale
+            signal_score = score / 100.0
+            
+            # Create ranked signal (could create a subclass with score)
+            ranked.append((signal_score, signal))
+        
+        # Sort by score descending
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        
+        # Return only signals with score > 0.5
+        return [s for score, s in ranked if score > 0.5]
+    
+    def _calculate_pipeline_metrics(self) -> Dict[str, Any]:
+        """Calculate pipeline metrics"""
+        return {
+            'total_processed': len(self.analysis_results),
+            'signal_count': sum(1 for r in self.analysis_results if r.get('signals')),
+            'pattern_count': sum(len(r.get('patterns', [])) for r in self.analysis_results),
+            'avg_processing_time': 0.0,  # Would need timing data
+            'pipeline_health': 'healthy'  # Could add health checks
+        }
+    
+    def _log_signals(self, 
+                    signals: List[TradingSignal], 
+                    snapshot: MarketDepthSnapshot,
+                    patterns: List[PatternDetection]):
+        """Log significant signals"""
+        for signal in signals:
+            if signal.confidence > 0.7:
+                log_entry = {
+                    'timestamp': datetime.now(),
+                    'signal': signal.signal,
+                    'confidence': signal.confidence,
+                    'price': signal.price,
+                    'stop_loss': signal.stop_loss,
+                    'take_profit': signal.take_profit,
+                    'best_bid': snapshot.best_bid,
+                    'best_ask': snapshot.best_ask,
+                    'patterns': [p.pattern_type.value for p in patterns],
+                    'rationale': signal.rationale
+                }
+                self.trade_log.append(log_entry)
+                
+                logger.info(
+                    f"STRONG SIGNAL: {signal.signal} at {signal.price:.2f} "
+                    f"(Confidence: {signal.confidence:.2f}, RR: {signal.risk_reward_ratio:.2f})"
+                )
+    
+    def start_monitoring(self):
+        """Start real-time monitoring"""
+        self.monitor.start()
+        self.is_running = True
+        logger.info("Pipeline monitoring started")
+    
+    def stop_monitoring(self):
+        """Stop real-time monitoring"""
+        self.monitor.stop()
+        self.is_running = False
+        logger.info("Pipeline monitoring stopped")
+    
+    def get_pipeline_report(self) -> Dict[str, Any]:
+        """Get comprehensive pipeline report"""
+        report = {
+            'timestamp': datetime.now(),
+            'pipeline_status': 'running' if self.is_running else 'stopped',
+            'symbol': self.symbol,
+            'metrics': self._calculate_pipeline_metrics(),
+            'recent_signals': [
+                {
+                    'signal': s.signal,
+                    'confidence': s.confidence,
+                    'price': s.price,
+                    'timestamp': s.timestamp
+                }
+                for s in self.monitor.get_recent_signals(5)
+            ],
+            'current_depth': self._get_current_depth_summary(),
+            'pattern_statistics': self._get_pattern_statistics(),
+            'system_health': self._check_system_health()
+        }
+        
+        return report
+    
+    def _get_current_depth_summary(self) -> Dict[str, Any]:
+        """Get current depth summary"""
+        if not self.analyzer.depth_history:
+            return {}
+        
+        latest = self.analyzer.depth_history[-1]
+        return {
+            'best_bid': latest.best_bid,
+            'best_ask': latest.best_ask,
+            'spread': latest.spread,
+            'spread_bps': (latest.spread / latest.best_bid * 10000) if latest.best_bid > 0 else 0,
+            'bid_volume': latest.total_bid_volume,
+            'ask_volume': latest.total_ask_volume,
+            'volume_ratio': latest.total_bid_volume / latest.total_ask_volume if latest.total_ask_volume > 0 else 0
+        }
+    
+    def _get_pattern_statistics(self) -> Dict[str, Any]:
+        """Get pattern detection statistics"""
+        if not self.analysis_results:
+            return {}
+        
+        # Count patterns by type
+        pattern_counts = defaultdict(int)
+        for result in self.analysis_results:
+            for pattern in result.get('patterns', []):
+                pattern_counts[pattern.pattern_type.value] += 1
+        
+        return {
+            'total_patterns_detected': sum(pattern_counts.values()),
+            'pattern_distribution': dict(pattern_counts),
+            'most_common_pattern': max(pattern_counts.items(), key=lambda x: x[1])[0] if pattern_counts else None,
+            'pattern_detection_rate': len(self.analysis_results) / max(sum(pattern_counts.values()), 1)
+        }
+    
+    def _check_system_health(self) -> Dict[str, Any]:
+        """Check system health"""
+        health = {
+            'status': 'healthy',
+            'checks': [],
+            'issues': []
+        }
+        
+        # Check pipeline components
+        if not self.is_running and self.config.get('require_monitoring', False):
+            health['issues'].append('Monitoring not running')
+            health['status'] = 'warning'
+        
+        # Check depth history
+        if len(self.analyzer.depth_history) < 10:
+            health['checks'].append('Limited depth history')
+        
+        # Check signal generation
+        recent_results = list(self.analysis_results)[-20:]
+        if recent_results and not any(r.get('signals') for r in recent_results):
+            health['checks'].append('No recent signals generated')
+        
+        return health

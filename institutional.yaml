@@ -1,0 +1,119 @@
+# config/institutional.yaml
+
+system:
+  mode: "backtest"  # backtest, paper, live
+  update_interval: 300  # 5 minutes
+  max_symbols: 10  # Focus on fewer symbols for quality
+
+symbols:
+  - symbol: "EURUSD"
+    source: "mt5"
+    tick_data: true  # Require tick data for order flow
+    order_book_depth: 10  # Levels of order book
+    
+  - symbol: "XAUUSD"
+    source: "mt5"
+    tick_data: true
+    
+  - symbol: "NAS100"
+    source: "mt5"
+    tick_data: false
+    
+  - symbol: "BTCUSD"
+    source: "mt5"
+    tick_data: true
+
+timeframes:
+  analysis: "5m"    # For order flow
+  trading: "15m"    # For position management
+  monitoring: "1h"  # For risk management
+
+brokers:
+  mt5:
+    enabled: true
+    server: "Eightcap-Demo"
+    login: 7933483
+    password: "Dak(5)Ine6"
+    require_tick_data: true
+    
+  ccxt:
+    enabled: false
+
+strategy:
+  enabled_methods:
+    - "vsa"           # Volume Spread Analysis
+    - "order_blocks"  # Institutional order blocks
+    - "market_profile" # Volume Profile
+    - "liquidity"     # Liquidity pool detection
+  
+  signal_filters:
+    min_confidence: 0.65
+    min_risk_reward: 2.0
+    max_positions_per_day: 3
+    
+  entry_rules:
+    require_multiple_confirmations: true
+    wait_for_retracement: true
+    max_entry_deviation_pct: 0.5
+
+execution:
+  default_algorithm: "VWAP"
+  max_slippage_bps: 5.0
+  max_participation_pct: 10.0
+  
+  algorithms:
+    VWAP:
+      volume_profile_lookback: 20  # days
+      time_slices: 60  # minutes per slice
+      
+    ICEBERG:
+      visible_ratio: 0.1
+      refresh_time: 5  # seconds
+
+risk:
+  initial_capital: 10000.0
+  max_daily_loss_pct: 2.0
+  max_position_risk_pct: 1.0  # Risk per trade
+  max_portfolio_risk_pct: 5.0  # Total risk
+  correlation_threshold: 0.7
+  
+  position_sizing:
+    method: "volatility_targeting"
+    target_volatility: 0.15  # 15% annual
+    kelly_fraction: 0.25  # Fractional Kelly
+  
+  circuit_breakers:
+    max_drawdown_pct: 10.0
+    max_consecutive_losses: 5
+    max_daily_trades: 10
+
+monitoring:
+  dashboard_enabled: true
+  prometheus_port: 9090
+  alerts:
+    email: ""
+    webhook: ""
+    
+  metrics:
+    - "sharpe_ratio"
+    - "max_drawdown"
+    - "win_rate"
+    - "profit_factor"
+    - "calmar_ratio"
+
+backtesting:
+  enabled: true
+  period_years: 3
+  walk_forward:
+    enabled: true
+    window_years: 1
+    step_months: 3
+  
+  monte_carlo:
+    enabled: true
+    simulations: 1000
+    
+  reporting:
+    equity_curve: true
+    trade_analysis: true
+    risk_metrics: true
